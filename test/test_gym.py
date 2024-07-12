@@ -13,11 +13,20 @@ envs = isaacgymenvs.make(
 	rl_device="cuda:0",
 	headless=False,
 	graphics_device_id=0,
+	force_render=True
 )
 
 print("Observation space is", envs.observation_space)
 print("Action space is", envs.action_space)
 obs = envs.reset()
-for _ in range(20):
-	random_actions = 2.0 * torch.rand((num_envs,) + envs.action_space.shape, device = 'cuda:0') - 1.0
-	envs.step(random_actions)
+
+actions = torch.zeros((num_envs * envs.num_robots , envs.cfg["env"]["numActions"]), device = 'cuda:0')
+actions[:, 0] = 1.0
+
+for _ in range(1000):
+	random_actions = 2.0 * torch.rand((num_envs * envs.num_robots, envs.cfg["env"]["numActions"]), device = 'cuda:0') - 1.0
+	# random_actions = 2.0 * torch.rand((num_envs, ) + envs.action_space.shape, device = 'cuda:0') - 1.0
+	# envs.step(random_actions)
+	envs.step(actions)
+
+breakpoint()
