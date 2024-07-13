@@ -2,6 +2,7 @@
 name: MultiRoboMaster
 
 physics_engine: 'physx'
+debug_viz: False
 
 # if given, will override the device setting in gym.
 env: 

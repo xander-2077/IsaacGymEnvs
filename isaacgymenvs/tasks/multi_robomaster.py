@@ -54,9 +54,9 @@ class MultiRoboMaster(MA_VecTask):
         # get gym GPU state tensors 
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)  # Shape: (num_env * num_actor, 13)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)  # Shape: (num_dofs, 2)
-
-        self.gym.refresh_dof_state_tensor(self.sim)
+        
         self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
 
         # State
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
@@ -129,7 +129,7 @@ class MultiRoboMaster(MA_VecTask):
         # load robomaster asset
         robot_options = gymapi.AssetOptions()   # TODO: 控制碰撞数量
         robot_options.fix_base_link = False
-        robot_options.collapse_fixed_joints = False
+        robot_options.collapse_fixed_joints = True
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file_robot, robot_options)
         
         # load ball asset
@@ -150,18 +150,18 @@ class MultiRoboMaster(MA_VecTask):
         rm_gripper_limits = []      # lower, upper, max effort
 
         for i in range(self.num_dof):
-            if robot_dof_props[i]['hasLimits']:    # 2个
+            if robot_dof_props[i]['hasLimits']:    # 2个, 'left_gripper_joint_1', 'right_gripper_joint_1',
                 robot_dof_props[i]['driveMode'] = gymapi.DOF_MODE_EFFORT
                 robot_dof_props[i]['stiffness'] = 0.0
                 robot_dof_props[i]['damping'] = 0.0
                 rm_gripper_limits.append([robot_dof_props[i]['lower'], robot_dof_props[i]['upper'], robot_dof_props[i]['effort']])
-            elif robot_dof_props[i]['velocity'] == 10:   # 4个
+            elif robot_dof_props[i]['velocity'] == 10:   # 4个, 'front_left_wheel_joint','front_right_wheel_joint','rear_left_wheel_joint','rear_right_wheel_joint',
                 robot_dof_props[i]['driveMode'] = gymapi.DOF_MODE_VEL
                 robot_dof_props[i]['stiffness'] = self.wheel_stiffness
                 robot_dof_props[i]['damping'] = self.wheel_damping
                 self.wheel_limits_lower = robot_dof_props[i]['lower']
                 self.wheel_limits_upper = robot_dof_props[i]['upper']
-            else:
+            else:   # rollers, 'front_left_roller1_joint'...
                 robot_dof_props[i]['driveMode'] = gymapi.DOF_MODE_NONE
                 robot_dof_props[i]['stiffness'] = 0.0
                 robot_dof_props[i]['damping'] = 0.0
@@ -228,6 +228,8 @@ class MultiRoboMaster(MA_VecTask):
         rear_right_wheel_dof_index = self.gym.find_actor_dof_handle(env_ptr, rm_handle, "rear_right_wheel_joint")
         for k in range(self.num_robots):
             self.wheel_dof_indices_in_env.extend([x + k * self.num_dof_per_robot for x in [front_left_wheel_dof_index, front_right_wheel_dof_index, rear_left_wheel_dof_index, rear_right_wheel_dof_index]])
+        
+        # print(self.gym.get_actor_dof_names(env_ptr, rm_handle))
 
     def compute_reward(self, actions):
         '''
@@ -255,7 +257,6 @@ class MultiRoboMaster(MA_VecTask):
         self.gym.refresh_dof_state_tensor(self.sim)
         # states_buf: (num_envs, num_states)
         # num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
-        breakpoint()
         self.states_buf[:] = compute_states(    
             self.robot_states,
             self.ball_states,
@@ -308,23 +309,44 @@ class MultiRoboMaster(MA_VecTask):
         self.compute_observations()
         self.compute_reward(self.actions)
 
-        if self.viewer is not None:
+        if self.viewer is not None and self.cfg['debug_viz']:
             self.gym.clear_lines(self.viewer)
             for env_idx, env_ptr in enumerate(self.envs):
                 for robot_idx in range(self.num_robots):
-                    robot_coordinate = self.states_buf[env_idx, robot_idx * 12: robot_idx * 12 + 3]
-                    
+                    robot_coordinate = self.states_buf[env_idx, robot_idx * 12: robot_idx * 12 + 3].cpu().numpy()
+                    self._add_robot_lines(env_ptr, robot_coordinate, robot_idx)
+
+    def _add_robot_lines(self, env_ptr, coordinate, idx, radius=0.2):
+        lines = []
+        for height in range(3):
+            for angle in range(360):
+                theta1 = np.radians(angle)
+                theta2 = np.radians(angle + 1)
+                begin_point = [coordinate[0] + radius * np.cos(theta1),
+                               coordinate[1] + radius * np.sin(theta1),
+                               coordinate[2] + height * 0.01]
+                end_point = [coordinate[0] + radius * np.cos(theta2),
+                             coordinate[1] + radius * np.sin(theta2),
+                             coordinate[2] + height * 0.01]   
+                lines.append(begin_point)
+                lines.append(end_point)
+        lines = np.array(lines, dtype=np.float32)
+
+        if idx % 2 == 0:
+            colors = np.array([[1/(idx+1), 0, 0]] * (len(lines) // 2), dtype=np.float32)
+        else:
+            colors = np.array([[0, 0, 1/idx]] * (len(lines) // 2), dtype=np.float32)
+
+        self.gym.add_lines(self.viewer, env_ptr, len(lines) // 2, lines, colors)
 
 
-    def record_traj(self, record_path, record_freq):
+    def _record_traj(self, record_path, record_freq):
         pass
 
 
 #####################################################################
 ###=========================jit functions=========================###
 #####################################################################
-
-
 @torch.jit.script
 def compute_states(
         robot_states,    # (num_envs, num_robots, 13)
