@@ -238,7 +238,7 @@ class MA_VecTask(Env):
             # self.step(zero_actions)
             env_ids = to_torch(np.arange(self.num_envs), device=self.device, dtype=torch.long)
             self.reset_idx(env_ids)
-            # self.compute_observations()  # TODO:
+            self.compute_observations()
             self.pos_before = self.obs_buf[:self.num_envs, :2].clone()
         else:
             self._reset_envs(env_ids=env_ids)

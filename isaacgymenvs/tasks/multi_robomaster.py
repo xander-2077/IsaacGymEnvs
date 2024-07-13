@@ -1,19 +1,18 @@
-import numpy as np
 import os
-from typing import Tuple, Dict
+import numpy as np
 import torch
-from torch import Tensor
-from gym.spaces import Box
 
 from isaacgym import gymtorch
 from isaacgym import gymapi
 from isaacgym.torch_utils import *
 
-# from isaacgymenvs.tasks.base.vec_task import VecTask
 from isaacgymenvs.tasks.base.ma_vec_task import MA_VecTask
 from isaacgymenvs.utils.torch_jit_utils import to_torch
 
 from isaacgymenvs.utils.rm_utils import *
+from gym.spaces import Box
+from torch import Tensor
+from typing import Tuple, Dict
 
 
 class MultiRoboMaster(MA_VecTask):
@@ -25,7 +24,7 @@ class MultiRoboMaster(MA_VecTask):
         # num_robots=4, num_agents=6, num_agent=2
         self.num_robots = self.cfg["env"]["numRobots"]
         self.cfg["env"]["numAgents"] = self.cfg["env"]["numRobots"] + 2
-        self.num_agent = int(self.cfg["env"]["numRobots"] / 2)      # 单边的agent数量
+        self.num_agent = int(self.cfg["env"]["numRobots"] / 2)
 
         self.max_episode_length = self.cfg["env"]["episodeLength"]
         self.wheel_stiffness = self.cfg["env"]["control"]["stiffness"]
@@ -40,12 +39,12 @@ class MultiRoboMaster(MA_VecTask):
             self.rew_scales[k] = v
         
         self.cfg["env"]["numActions"] = 3
-        self.cfg["env"]["numStates"] = self.num_robots * 6 + 4
+        self.cfg["env"]["numStates"] = self.num_robots * 12 + 6
         self.cfg["env"]["numObservations"] = 0
 
         super().__init__(config=self.cfg, sim_device=sim_device, rl_device=rl_device,
-                         graphics_device_id=graphics_device_id,
-                         headless=headless, force_render=force_render)
+                         graphics_device_id=graphics_device_id, headless=headless,
+                         virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         if self.viewer != None:
             cam_pos = gymapi.Vec3(15.0, 0.0, 3.4)
@@ -66,7 +65,7 @@ class MultiRoboMaster(MA_VecTask):
         self.initial_root_states = self.root_states.clone()
         self.initial_root_states[:, 7:13] = 0  # set lin_vel and ang_vel to 0
         self.robot_states = self.root_states.view(self.num_envs, self.num_agents, -1)[:, 2:, :]     # (num_envs, num_robots, 13)
-        self.ball_states = self.root_states.view(self.num_envs, self.num_agents, -1)[:, 1, :].squeeze()    # (num_envs, 13)
+        self.ball_states = self.root_states.view(self.num_envs, self.num_agents, -1)[:, 1, :].squeeze(1)    # (num_envs, 13)
 
         # DoF
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
@@ -167,21 +166,25 @@ class MultiRoboMaster(MA_VecTask):
                 robot_dof_props[i]['stiffness'] = 0.0
                 robot_dof_props[i]['damping'] = 0.0
 
-        # define start pose for robomaster
+        # define start pose for robomaster, 偶数在左边，奇数在右边            
+        #                  ⬆ y
+        #  -------------------------------    3
+        # |                               |   
+        # |                               |   
+        # |                               |   0   -> x
+        # |                               |   
+        # |                               |           
+        #  -------------------------------    -3
+        # -4.5            0              4.5
+        #
         robot_pose = [gymapi.Transform() for i in range(self.num_robots)]
-        # robot_pose[0].p = gymapi.Vec3(-2, -2, 0.01)
-        # robot_pose[1].p = gymapi.Vec3(-2, 2, 0.01)
-        # robot_pose[2].p = gymapi.Vec3(2, -2, 0.01)
-        # robot_pose[3].p = gymapi.Vec3(2, 2, 0.01)
-        # robot_pose[2].r = gymapi.Quat(0, 0, 1, 0)
-        # robot_pose[3].r = gymapi.Quat(0, 0, 1, 0)
         for i in range(self.num_robots):
             delta = 2*self.field_width / (self.num_agent +1)
             if i % 2 == 0:
-                robot_pose[i].p = gymapi.Vec3(2, -self.field_width+(i/2+1)*delta, 0.01)
+                robot_pose[i].p = gymapi.Vec3(-2, -self.field_width+(i/2+1)*delta, 0.01)
             else:
-                robot_pose[i].p = gymapi.Vec3(-2, -self.field_width+((i+1)/2)*delta, 0.01)
-            if i % 2 == 0: robot_pose[i].r = gymapi.Quat(0, 0, 1, 0)
+                robot_pose[i].p = gymapi.Vec3(2, -self.field_width+((i+1)/2)*delta, 0.01)
+            if i % 2 == 1: robot_pose[i].r = gymapi.Quat(0, 0, 1, 0)
 
         # TODO: create force sensors
 
@@ -226,16 +229,6 @@ class MultiRoboMaster(MA_VecTask):
         for k in range(self.num_robots):
             self.wheel_dof_indices_in_env.extend([x + k * self.num_dof_per_robot for x in [front_left_wheel_dof_index, front_right_wheel_dof_index, rear_left_wheel_dof_index, rear_right_wheel_dof_index]])
 
-    # def refresh_state_dict(self):
-    #     self.state_dict['r0'] = self.state_buf[..., :self.num_info_per_robot]
-    #     self.state_dict['r1'] = self.state_buf[..., self.num_info_per_robot:2*self.num_info_per_robot]
-    #     self.state_dict['b0'] = self.state_buf[..., 2*self.num_info_per_robot:3*self.num_info_per_robot]
-    #     self.state_dict['b1'] = self.state_buf[..., 3*self.num_info_per_robot:4*self.num_info_per_robot]
-    #     self.state_dict['ball_pos'] = self.state_buf[..., 4*self.num_info_per_robot:4*self.num_info_per_robot+2]
-    #     self.state_dict['ball_vel'] = self.state_buf[..., 4*self.num_info_per_robot+2:4*self.num_info_per_robot+4]
-    #     self.state_dict['goal_r'] = self.state_buf[..., 4*self.num_info_per_robot+4:4*self.num_info_per_robot+6]
-    #     self.state_dict['goal_b'] = self.state_buf[..., 4*self.num_info_per_robot+6:4*self.num_info_per_robot+8]
-
     def compute_reward(self, actions):
         '''
         Get reward_buf, reset_buf 
@@ -243,7 +236,7 @@ class MultiRoboMaster(MA_VecTask):
         rew_buf = (num_env, )
         reset_buf = (num_env, ) 
         '''
-        self.rew_buf[:], self.reset_buf[:], self.extras['win'], self.extras['lose'], self.extras['draw'] = compute_reward(
+        self.rew_buf[:], self.reset_buf[:], self.extras['win'], self.extras['lose'], self.extras['draw'] = compute_robot_reward(
             self.states_buf,
             self.num_envs,
             self.rew_scales,
@@ -251,72 +244,24 @@ class MultiRoboMaster(MA_VecTask):
             self.progress_buf,
             self.max_episode_length,
             self.dt,
+            self.field_length,
+            self.field_width,
+            self.num_robots,
+            self.num_agent
         )
-
-
-
-
-        # self.reward_buf.zero_()
-        # for env_idx in range(self.num_env):
-        #     # Scoring or Conceding
-        #     if self.state_dict['ball_pos'][env_idx][0] < self.state_dict['goal_r'][env_idx][0]:
-        #         self.reward_buf[env_idx][0] += -1 * self.cfg["conceding"]
-        #         self.reward_buf[env_idx][1] += 1 * self.cfg["scoring"]
-        #         self.reset_buf[env_idx] = 1
-        #     elif self.state_dict['ball_pos'][env_idx][0] > self.state_dict['goal_b'][env_idx][0]:
-        #         self.reward_buf[env_idx][0] += 1 * self.cfg["scoring"]
-        #         self.reward_buf[env_idx][1] += -1 * self.cfg["conceding"]
-        #         self.reset_buf[env_idx] = 1
-            
-        #     # Out of boundary
-        #     for robot in ['r0', 'r1']:
-        #         if self.state_dict[robot][env_idx][1] < self.state_dict['goal_r'][env_idx][0]-1 or self.state_dict[robot][env_idx][1] > self.state_dict['goal_b'][env_idx][0]+1:
-        #             self.reward_buf[env_idx][0] += -1 * self.cfg["out_of_boundary"]
-        #             self.reset_buf[env_idx] = 1
-
-        #     for robot in ['b0', 'b1']:
-        #         if self.state_dict[robot][env_idx][1] < self.state_dict['goal_r'][env_idx][0]-1 or self.state_dict[robot][env_idx][1] > self.state_dict['goal_b'][env_idx][0]+1:
-        #             self.reward_buf[env_idx][1] += 1 * self.cfg["out_of_boundary"]
-        #             self.reset_buf[env_idx] = 1
-
-        #     # Velocity to ball
-        #     for robot in ['r0', 'r1', 'b0', 'b1']:
-        #         dir_vec = self.state_dict['ball_pos'][env_idx] - self.state_dict[robot][env_idx][1:3]
-        #         norm_dir_vec = dir_vec / dir_vec.norm()
-        #         vel_towards_ball = torch.dot(self.state_dict[robot][env_idx][3:5], norm_dir_vec).item()
-        #         if robot in ['r0', 'r1']:
-        #             self.reward_buf[env_idx][0] += vel_towards_ball * self.cfg["vel_to_ball"]
-        #         else:
-        #             self.reward_buf[env_idx][1] += vel_towards_ball * self.cfg["vel_to_ball"]
-
-        #     # Velocity forward
-        #     self.reward_buf[env_idx][0] += (self.state_dict['r0'][env_idx][3] + self.state_dict['r1'][env_idx][3]) * self.cfg["vel"]
-        #     self.reward_buf[env_idx][1] += - (self.state_dict['b0'][env_idx][3] + self.state_dict['b1'][env_idx][3]) * self.cfg["vel"]
-
-        #     # Close to ball
-        #     for robot in ['r0', 'r1', 'b0', 'b1']:
-        #         dist_to_ball = torch.norm(self.state_dict['ball_pos'][env_idx] - self.state_dict[robot][env_idx][1:3]).item()
-        #         if dist_to_ball < 0.3:
-        #             if robot in ['r0', 'r1']:
-        #                 self.reward_buf[env_idx][0] += (0.5 - dist_to_ball) * self.cfg["dist_to_ball"]
-        #             else:
-        #                 self.reward_buf[env_idx][1] += (0.5 - dist_to_ball) * self.cfg["dist_to_ball"]
-
-        # self.reset_buf = torch.where(self.progress_buf >= self.max_episode_length - 1, torch.ones_like(self.reset_buf), self.reset_buf)
-        # # pprint(self.reward_buf)
-
 
     def compute_observations(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_dof_state_tensor(self.sim)
-
         # states_buf: (num_envs, num_states)
-        # num_states: num_robots * 6[Pos(2), Vel(2), Ori(1), AngularVel(1)] + 4[BallPos(2), BallVel(2)]     
+        # num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
+        breakpoint()
         self.states_buf[:] = compute_states(    
             self.robot_states,
             self.ball_states,
             self.num_envs,
         )
+        # TODO: self.compute_robot_observations()
 
     def reset_idx(self, env_ids):
         """
@@ -359,9 +304,20 @@ class MultiRoboMaster(MA_VecTask):
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(env_ids) > 0:
             self.reset_idx(env_ids)
-
+        
         self.compute_observations()
-        # self.compute_reward(self.actions)
+        self.compute_reward(self.actions)
+
+        if self.viewer is not None:
+            self.gym.clear_lines(self.viewer)
+            for env_idx, env_ptr in enumerate(self.envs):
+                for robot_idx in range(self.num_robots):
+                    robot_coordinate = self.states_buf[env_idx, robot_idx * 12: robot_idx * 12 + 3]
+                    
+
+
+    def record_traj(self, record_path, record_freq):
+        pass
 
 
 #####################################################################
@@ -378,20 +334,23 @@ def compute_states(
     # type: (Tensor, Tensor, int)->Tensor
     # input: position([0:3]), rotation([3:7], xyzw), linear velocity([7:10]), angular velocity([10:13])
     # return: (num_envs, num_states)
-    # num_states: num_robots * 6[Pos(2), Vel(2), Ori(1), AngularVel(1)] + 4[BallPos(2), BallVel(2)]        
-    states_buf = torch.cat((robot_states[..., 0:2],
-                           robot_states[..., 7:9],
-                           get_euler_xyz(robot_states[..., 3:7])[-1].unsqueeze(-1),
-                           robot_states[..., -1].unsqueeze(-1)),
-                           dim=-1).reshape(num_envs, -1)
+    # num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
+    rpy = get_euler_xyz(robot_states.reshape(-1, 13)[:, 3:7])
+    states_buf = torch.cat((robot_states[..., 0:3],
+                            robot_states[..., 7:10],
+                            rpy[0].reshape(num_envs, -1).unsqueeze(-1),
+                            rpy[1].reshape(num_envs, -1).unsqueeze(-1),
+                            rpy[2].reshape(num_envs, -1).unsqueeze(-1),
+                            robot_states[..., 10:]),
+                            dim=-1).reshape(num_envs, -1)
     states_buf = torch.cat((states_buf, 
-                            ball_states[:, 0:2], 
-                            ball_states[:, 7:9]), 
+                            ball_states[:, 0:3], 
+                            ball_states[:, 7:10]), 
                             dim=-1)
     return states_buf
 
 @torch.jit.script
-def compute_reward(
+def compute_robot_reward(
         states_buf,
         num_envs,
         rew_scales,
@@ -399,17 +358,55 @@ def compute_reward(
         progress_buf,
         max_episode_length,
         dt,
+        field_width,
+        field_length,
+        num_robots,
+        num_agent,
 ):
-    # type: (Tensor, int, Dict[str, float], Tensor, Tensor, int, float)->Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
+    # type: (Tensor, int, Dict[str, float], Tensor, Tensor, int, float, float, float, int, int)->Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
     # input: 
-    # return: rew_buf[num_envs], reset_buf[num_envs], win[num_envs], lose[num_envs], draw[num_envs]
+    # - states_buf: (num_envs, num_states)
+    # -              num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
+    # - num_envs: int
+    # - rew_scales: Dict[str, float]
+    # - reset_buf: (num_envs, )
+
+    # return: 
+    #   rew_buf[num_envs], reset_buf[num_envs], win[num_envs], lose[num_envs], draw[num_envs]
+    device = states_buf.device
+
+    num_robot_info = 12
+    out_of_bounds_tolerance = 0.15
+    tmp_ones = torch.ones_like(reset_buf).to(device)
+
+    # reward
+    win_reward = torch.where(states_buf[:, -6] > field_length, tmp_ones * rew_scales['scoring'], torch.zeros_like(reset_buf, dtype=torch.float))
+    lose_penalty = torch.where(states_buf[:, -6] < -field_length, tmp_ones * rew_scales['conceding'], torch.zeros_like(reset_buf, dtype=torch.float))
+    draw_penalty = torch.where(progress_buf >= max_episode_length - 1, tmp_ones * rew_scales['draw_penalty_scale'], torch.zeros_like(reset_buf,
+                                                                                                                                     dtype=torch.float))
+    rew_out_of_bounds = torch.zeros(num_envs, dtype=torch.float).to(device)
+    for i in range(num_agent):
+        rew_out_of_bounds += torch.where(states_buf[:, 2*i * num_robot_info] < -(field_width + out_of_bounds_tolerance), tmp_ones, torch.zeros_like(reset_buf, dtype=torch.float))
+        rew_out_of_bounds += torch.where(states_buf[:, 2*i * num_robot_info] > (field_width + out_of_bounds_tolerance), tmp_ones, torch.zeros_like(reset_buf, dtype=torch.float))
     
+    # rew_vel_forward = torch.zeros(num_envs, dtype=torch.float).to(device)
+    # for i in range(num_robots):
+    #     rew_vel_forward += (states_buf[:, i * num_robot_info + 7] + states_buf[:, i * num_robot_info + 8]) * rew_scales['vel_forward']
 
 
+    dense_reward = rew_out_of_bounds * rew_scales['out_of_bounds'] 
 
-    
+    total_reward = win_reward + lose_penalty + draw_penalty + dense_reward * rew_scales['dense_reward_scale']
 
-    return total_reward, reset, is_win, is_lose, progress_buf>=max_episode_length-1
+    # reset
+    out_of_bounds = torch.zeros(num_envs, dtype=torch.bool).to(device)
+    for i in range(num_robots):
+        out_of_bounds |= states_buf[:, i * num_robot_info] < -(field_width + out_of_bounds_tolerance)
+        out_of_bounds |= states_buf[:, i * num_robot_info] > (field_width + out_of_bounds_tolerance)
+    reset = torch.where(out_of_bounds, tmp_ones, reset_buf)
+    reset=  torch.where((win_reward > 0) | (lose_penalty < 0), tmp_ones, reset)
+
+    return total_reward, reset, win_reward>0, lose_penalty<0, progress_buf>=max_episode_length-1
 
 # @torch.jit.script
 # def compute_robot_observations(

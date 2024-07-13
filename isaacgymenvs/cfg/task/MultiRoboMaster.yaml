@@ -17,14 +17,14 @@ env:
   # renderFPS: 60
 
   episodeLength: 1500
-  envSpacing: 7.0  # [m]
+  envSpacing: 4.5  # [m]
 
   plane:
     static_friction: 1.0
     dynamic_friction: 1.0
     restitution: 0
 
-  field:
+  field: 
     length: 4.5
     width: 3.0
 
@@ -35,11 +35,14 @@ env:
 
   reward:
     scoring: 1000
-    conceding: 1000
-    vel_to_ball: 0.05
-    vel: 0.1
-    out_of_boundary: 10
-    dist_to_ball: 0.1
+    conceding: -1000
+    draw_penalty_scale: -10.0
+    out_of_bounds: -100
+    vel_to_ball: 1
+    vel: 1
+    dist_to_ball: 1
+    dense_reward_scale: 1.0
+    
 
 task:
   randomize: False

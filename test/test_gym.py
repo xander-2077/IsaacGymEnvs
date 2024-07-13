@@ -2,7 +2,7 @@ import isaacgym
 import isaacgymenvs
 import torch
 
-num_envs = 4
+num_envs = 1024
 
 envs = isaacgymenvs.make(
     seed=0, 
@@ -23,7 +23,7 @@ obs = envs.reset()
 actions = torch.zeros((num_envs * envs.num_robots , envs.cfg["env"]["numActions"]), device = 'cuda:0')
 actions[:, 0] = 1.0
 
-for _ in range(1000):
+for _ in range(10000):
 	random_actions = 2.0 * torch.rand((num_envs * envs.num_robots, envs.cfg["env"]["numActions"]), device = 'cuda:0') - 1.0
 	# random_actions = 2.0 * torch.rand((num_envs, ) + envs.action_space.shape, device = 'cuda:0') - 1.0
 	# envs.step(random_actions)
