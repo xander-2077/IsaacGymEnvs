@@ -1,18 +1,6 @@
 import torch
 import numpy as np
 
-def quaternion_to_yaw(q, device):
-    quaternions = torch.as_tensor(q, dtype=torch.float32, device=device)
-    
-    x = quaternions[..., 0]
-    y = quaternions[..., 1]
-    z = quaternions[..., 2]
-    w = quaternions[..., 3]
-
-    siny_cosp = 2 * (w * z + x * y)
-    cosy_cosp = 1 - 2 * (y**2 + z**2)
-    
-    return torch.atan2(siny_cosp, cosy_cosp).to(device)
 
 def local_pos(global_pos, robot_xy, rotation_matrix):
   

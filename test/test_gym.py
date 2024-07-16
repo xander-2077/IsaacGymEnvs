@@ -2,7 +2,11 @@ import isaacgym
 import isaacgymenvs
 import torch
 
-num_envs = 1
+# torch.cuda.synchronize()
+# assert torch.cuda.is_available(), "CUDA 不可用"
+
+
+num_envs = 1024
 
 envs = isaacgymenvs.make(
     seed=0, 
@@ -23,10 +27,18 @@ obs = envs.reset()
 actions = torch.zeros((num_envs * envs.num_robots , envs.cfg["env"]["numActions"]), device = 'cuda:0')
 actions[:, 0] = 1.0
 
-for _ in range(10000):
+# for _ in range(10000):
+# 	random_actions = 2.0 * torch.rand((num_envs * envs.num_robots, envs.cfg["env"]["numActions"]), device = 'cuda:0') - 1.0
+# 	# random_actions = 2.0 * torch.rand((num_envs, ) + envs.action_space.shape, device = 'cuda:0') - 1.0
+# 	# envs.step(random_actions)
+# 	envs.step(actions)
+# 	if _ > 200 or _==3 or _==4:
+# 		breakpoint()
+step = 0
+
+while True:
 	random_actions = 2.0 * torch.rand((num_envs * envs.num_robots, envs.cfg["env"]["numActions"]), device = 'cuda:0') - 1.0
 	# random_actions = 2.0 * torch.rand((num_envs, ) + envs.action_space.shape, device = 'cuda:0') - 1.0
-	# envs.step(random_actions)
-	envs.step(actions)
-
-breakpoint()
+	envs.step(random_actions)
+	print('step: ', step)
+	step += 1

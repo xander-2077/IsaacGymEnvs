@@ -14,6 +14,8 @@ from gym.spaces import Box
 from torch import Tensor
 from typing import Tuple, Dict
 
+from colorama import Fore
+
 
 class MultiRoboMaster(MA_VecTask):
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
@@ -40,15 +42,15 @@ class MultiRoboMaster(MA_VecTask):
         
         self.cfg["env"]["numActions"] = 3
         self.cfg["env"]["numStates"] = self.num_robots * 12 + 6
-        self.cfg["env"]["numObservations"] = 0
+        self.cfg["env"]["numObservations"] = 54
 
         super().__init__(config=self.cfg, sim_device=sim_device, rl_device=rl_device,
                          graphics_device_id=graphics_device_id, headless=headless,
                          virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
         if self.viewer != None:
-            cam_pos = gymapi.Vec3(15.0, 0.0, 3.4)
-            cam_target = gymapi.Vec3(10.0, 0.0, 0.0)
+            cam_pos = gymapi.Vec3(5.0, 0.0, 3.4)
+            cam_target = gymapi.Vec3(0.0, 0.0, 0.0)
             self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
         # get gym GPU state tensors 
@@ -60,7 +62,7 @@ class MultiRoboMaster(MA_VecTask):
 
         # State
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
-        print(f'root_states:{self.root_states.shape}')   # (num_envs * num_agents, 13) 
+        print(f'root_states: {self.root_states.shape}')   # (num_envs * num_agents, 13) 
                                                          # position([0:3]), rotation([3:7]), linear velocity([7:10]), angular velocity([10:13])
         self.initial_root_states = self.root_states.clone()
         self.initial_root_states[:, 7:13] = 0  # set lin_vel and ang_vel to 0
@@ -69,13 +71,13 @@ class MultiRoboMaster(MA_VecTask):
 
         # DoF
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
-        print(f'dof:{self.dof_state.shape}')   # (num_envs * num_agents * num_dof, 2), 2: pos, vel
+        print(f'dof: {self.dof_state.shape}')   # (num_envs * num_agents * num_dof, 2), 2: pos, vel
         dof_state_shaped = self.dof_state.view(self.num_envs, -1, 2)  # dof_state_shaped: (num_envs, num_agents * num_dof, 2)
         self.default_dof_states = self.dof_state.clone()
 
 
     def allocate_buffers(self):
-        self.obs_buf = torch.zeros((self.num_robots * self.num_envs, self.num_obs), device=self.device,dtype=torch.float)
+        self.obs_buf = torch.zeros((self.num_envs * self.num_robots, self.num_obs), device=self.device,dtype=torch.float)
         self.states_buf = torch.zeros((self.num_envs, self.num_states), device=self.device, dtype=torch.float)
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reset_buf = torch.ones(self.num_envs, device=self.device, dtype=torch.long)
@@ -102,7 +104,7 @@ class MultiRoboMaster(MA_VecTask):
         self.sim = super().create_sim(self.device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
         
         self._create_ground_plane()
-        print(f'num envs {self.num_envs} env spacing {self.cfg["env"]["envSpacing"]}')
+        print(f'num_envs: {self.num_envs}, env_spacing: {self.cfg["env"]["envSpacing"]}')
         self._create_envs(self.num_envs, self.cfg["env"]['envSpacing'], int(np.sqrt(self.num_envs)))
 
         # # If randomizing, apply once immediately on startup before the fist sim step
@@ -233,8 +235,7 @@ class MultiRoboMaster(MA_VecTask):
 
     def compute_reward(self, actions):
         '''
-        Get reward_buf, reset_buf 
-        # FIXME: 出现两个进球奖励，代码逻辑需要调整
+        FIXME: 出现两个进球奖励，代码逻辑需要调整
         rew_buf = (num_env, )
         reset_buf = (num_env, ) 
         '''
@@ -249,8 +250,11 @@ class MultiRoboMaster(MA_VecTask):
             self.field_length,
             self.field_width,
             self.num_robots,
-            self.num_agent
+            self.num_agent,
+            actions,
+            self.obs_buf,
         )
+        # breakpoint()
 
     def compute_observations(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -262,7 +266,26 @@ class MultiRoboMaster(MA_VecTask):
             self.ball_states,
             self.num_envs,
         )
-        # TODO: self.compute_robot_observations()
+        # obs_buf: (num_envs*num_robots, num_obs)
+        # num_obs:     
+        #       - Pos(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+        #       - Vel(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+        #       - Ori(self[3 sin,cos,tan(yaw)])
+        #       - Ori2Others(teammates[3*(num_agent-1)], opponents[3*num_agent], ball[3], GoalCenter[2*3])
+        #       - Dist2Others(teammates[1*(num_agent-1)], opponents[1*num_agent], ball[1], GoalCenter[2])
+        #       - DistBall&Goal[2]
+        #       - TimeLeft[1]
+        for robot_idx in range(self.num_robots):
+            self.obs_buf[robot_idx*self.num_envs:(robot_idx+1)*self.num_envs, :] = compute_robot_observations(self.states_buf,
+                                                                                                              self.num_envs,
+                                                                                                              self.num_robots,
+                                                                                                              self.num_agent,
+                                                                                                              self.max_episode_length,
+                                                                                                              self.progress_buf,
+                                                                                                              self.field_length,
+                                                                                                              self.field_width,
+                                                                                                              robot_idx,
+                                                                                                              self.num_obs,)
 
     def reset_idx(self, env_ids):
         """
@@ -308,6 +331,8 @@ class MultiRoboMaster(MA_VecTask):
         
         self.compute_observations()
         self.compute_reward(self.actions)
+
+        # print("rpy: 0: ", self.states_buf[0, 6:9], "1: ", self.states_buf[0, 6+12:9+12], "2: ", self.states_buf[0, 6+2*12:9+2*12], "3: ", self.states_buf[0, 6+3*12:9+3*12])
 
         if self.viewer is not None and self.cfg['debug_viz']:
             self.gym.clear_lines(self.viewer)
@@ -356,7 +381,7 @@ def compute_states(
     # type: (Tensor, Tensor, int)->Tensor
     # input: position([0:3]), rotation([3:7], xyzw), linear velocity([7:10]), angular velocity([10:13])
     # return: (num_envs, num_states)
-    # num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
+    #   num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
     rpy = get_euler_xyz(robot_states.reshape(-1, 13)[:, 3:7])
     states_buf = torch.cat((robot_states[..., 0:3],
                             robot_states[..., 7:10],
@@ -384,17 +409,35 @@ def compute_robot_reward(
         field_length,
         num_robots,
         num_agent,
+        actions,
+        obs_buf,
 ):
-    # type: (Tensor, int, Dict[str, float], Tensor, Tensor, int, float, float, float, int, int)->Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
-    # input: 
+    # type: (Tensor, int, Dict[str, float], Tensor, Tensor, int, float, float, float, int, int, Tensor, Tensor)->Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
+    # Input: 
     # - states_buf: (num_envs, num_states)
     # -              num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
     # - num_envs: int
     # - rew_scales: Dict[str, float]
     # - reset_buf: (num_envs, )
-
-    # return: 
+    # - progress_buf: (num_envs, )
+    # - max_episode_length: int
+    # - dt: float
+    # - field_width: float
+    # - field_length: float
+    # - num_robots: int
+    # - num_agent: int
+    # - actions: (num_envs * num_robots, num_actions)
+    # - obs_buf: (num_envs*num_robots, num_obs)
+    #       - Pos(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+    #       - Vel(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+    #       - Ori(self[3 sin,cos,tan(yaw)])
+    #       - Ori2Others(teammates[3*(num_agent-1)], opponents[3*num_agent], ball[3], GoalCenter[2*3])
+    #       - Dist2Others(teammates[1*(num_agent-1)], opponents[1*num_agent], ball[1], GoalCenter[2])
+    #       - DistBall&Goal[2]
+    #       - TimeLeft[1]   
+    # Return: 
     #   rew_buf[num_envs], reset_buf[num_envs], win[num_envs], lose[num_envs], draw[num_envs]
+    # TODO: 待完善
     device = states_buf.device
 
     num_robot_info = 12
@@ -411,12 +454,24 @@ def compute_robot_reward(
         rew_out_of_bounds += torch.where(states_buf[:, 2*i * num_robot_info] < -(field_width + out_of_bounds_tolerance), tmp_ones, torch.zeros_like(reset_buf, dtype=torch.float))
         rew_out_of_bounds += torch.where(states_buf[:, 2*i * num_robot_info] > (field_width + out_of_bounds_tolerance), tmp_ones, torch.zeros_like(reset_buf, dtype=torch.float))
     
-    # rew_vel_forward = torch.zeros(num_envs, dtype=torch.float).to(device)
-    # for i in range(num_robots):
-    #     rew_vel_forward += (states_buf[:, i * num_robot_info + 7] + states_buf[:, i * num_robot_info + 8]) * rew_scales['vel_forward']
+    rew_vel_forward = torch.zeros(num_envs, dtype=torch.float).to(device)
+    for i in range(num_agent):
+        rew_vel_forward += states_buf[:, 2*i * num_robot_info + 3]
+
+    rew_vel_to_ball = torch.zeros(num_envs, dtype=torch.float).to(device)
+    # for i in range(num_agent): 
+        
+
+    rew_dist_to_ball = torch.zeros(num_envs, dtype=torch.float).to(device)
+    # for i in range(num_agent):
+
+    
 
 
-    dense_reward = rew_out_of_bounds * rew_scales['out_of_bounds'] 
+    dense_reward = rew_out_of_bounds * rew_scales['out_of_bounds'] + \
+                   rew_vel_forward * rew_scales["vel_forward"] + \
+                   rew_vel_to_ball * rew_scales["vel_to_ball"] + \
+                   rew_dist_to_ball * rew_scales["dist_to_ball"]
 
     total_reward = win_reward + lose_penalty + draw_penalty + dense_reward * rew_scales['dense_reward_scale']
 
@@ -425,14 +480,102 @@ def compute_robot_reward(
     for i in range(num_robots):
         out_of_bounds |= states_buf[:, i * num_robot_info] < -(field_width + out_of_bounds_tolerance)
         out_of_bounds |= states_buf[:, i * num_robot_info] > (field_width + out_of_bounds_tolerance)
-    reset = torch.where(out_of_bounds, tmp_ones, reset_buf)
-    reset=  torch.where((win_reward > 0) | (lose_penalty < 0), tmp_ones, reset)
+    # reset = torch.where(out_of_bounds, tmp_ones, reset_buf)
+    # reset = torch.where((win_reward > 0) | (lose_penalty < 0), tmp_ones, reset)
+    # reset = torch.where(progress_buf >= max_episode_length - 1, tmp_ones, reset)
+    # # 防止顶翻，可以不考虑
+    # # for i in range(num_robots):
+    # #     reset = torch.where((states_buf[:, 7+i*num_robot_info] < 5.8) | (states_buf[:, 7+i*num_robot_info] > 0.4), tmp_ones, reset)
 
-    return total_reward, reset, win_reward>0, lose_penalty<0, progress_buf>=max_episode_length-1
 
-# @torch.jit.script
-# def compute_robot_observations(
+    reset = []
+    reset_info = ['out_of_bounds', 'win', 'lose', 'draw']
+    reset.append(torch.where(out_of_bounds, tmp_ones, reset_buf))
+    reset.append(torch.where(win_reward > 0, tmp_ones, reset[-1]))
+    reset.append(torch.where(lose_penalty < 0, tmp_ones, reset[-1]))
+    reset.append(torch.where(progress_buf >= max_episode_length - 1, tmp_ones, reset[-1]))
+    # 防止顶翻，可以不考虑
+    # for i in range(num_robots):
+    #     reset.append(torch.where((states_buf[:, 7+i*num_robot_info] < 5.8) | (states_buf[:, 7+i*num_robot_info] > 0.4), tmp_ones, reset[-1]))
+    for i in range(len(reset)):
+        if i == 0 and torch.sum(reset[0] - reset_buf) > 0:
+            print(f"{reset_info[0]}: {torch.sum(reset[0] - reset_buf)}") 
+        elif torch.sum(reset[i] - reset[i-1]) > 0:
+            print(f"{reset_info[i]}: {torch.sum(reset[i] - reset[i-1])}")
 
-# ):
-#     # type: ()->Tensor
-#     pass
+    return total_reward, reset[-1], win_reward>0, lose_penalty<0, progress_buf>=max_episode_length-1
+
+@torch.jit.script
+def compute_robot_observations(
+    states_buf, 
+    num_envs,
+    num_robots,
+    num_agent,
+    max_episode_length,
+    progress_buf,
+    field_length,
+    field_width,
+    robot_idx,
+    num_obs,
+):
+    # type: (Tensor, int, int, int, int, Tensor, float, float, int, int)->Tensor
+    # Input:
+    # - states_buf: (num_envs, num_states)
+    #     num_states: num_robots * 12[Pos(3), Vel(3), Ori(3 rpy), AngularVel(3)] + 6[BallPos(3), BallVel(3)]
+    # - num_envs: int
+    # - num_robots: int
+    # - num_agent: int
+    # - max_episode_length: int
+    # - progress_buf: (num_envs, )
+    # - field_length: float
+    # - field_width: float
+    # - robot_idx: int
+    # Return:
+    # - obs_buf: (num_envs, num_robots, num_obs)
+    #       - Pos(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+    #       - Vel(self[2], teammates[2*(num_agent-1)], opponents[2*num_agent], ball[2])
+    #       - Ori(self[3 sin,cos,tan(yaw)])
+    #       - Ori2Others(teammates[3*(num_agent-1)], opponents[3*num_agent], ball[3], GoalCenter[2*3])
+    #       - Dist2Others(teammates[1*(num_agent-1)], opponents[1*num_agent], ball[1], GoalCenter[2])
+    #       - DistBall&Goal[2]
+    #       - TimeLeft[1]
+    device = states_buf.device
+    num_robot_info = 12
+    self_goal_center = torch.tensor([-field_length, 0.0], device=device, dtype=torch.float).repeat(num_envs, 1) 
+    oppo_goal_center = torch.tensor([field_length, 0.0], device=device, dtype=torch.float).repeat(num_envs, 1) 
+    if robot_idx % 2 == 0:
+        teammate_idx = torch.arange(num_agent, device=device, dtype=torch.int) * 2
+        teammate_idx = teammate_idx[teammate_idx != robot_idx]
+        opponent_idx = torch.arange(num_agent, device=device, dtype=torch.int) * 2 + 1
+    else: 
+        teammate_idx = torch.arange(num_agent, device=device, dtype=torch.int) * 2 + 1
+        teammate_idx = teammate_idx[teammate_idx != robot_idx]
+        opponent_idx = torch.arange(num_agent, device=device, dtype=torch.int) * 2
+    self_state = states_buf[:, robot_idx * num_robot_info: (robot_idx + 1) * num_robot_info]   # (num_envs, num_robot_info)
+    teammate_state = [states_buf[:, idx * num_robot_info: (idx + 1) * num_robot_info] for idx in teammate_idx]
+    teammate_state = torch.stack(teammate_state, dim=1)   # (num_envs, (num_agent-1), num_robot_info)
+    opponent_state = [states_buf[:, idx * num_robot_info: (idx + 1) * num_robot_info] for idx in opponent_idx]
+    opponent_state = torch.stack(opponent_state, dim=1)   # (num_envs, num_agent, num_robot_info)
+    ball_state = states_buf[:, -6:]    # (num_envs, 6)
+
+    obs_pos = torch.cat((self_state[:, 0:2], teammate_state[..., 0:2].reshape(num_envs, -1), opponent_state[..., 0:2].reshape(num_envs, -1), ball_state[:, 0:2], self_goal_center, oppo_goal_center), dim=-1)   # num_envs, 14
+    obs_vel = torch.cat((self_state[:, 3:5], teammate_state[..., 3:5].reshape(num_envs, -1), opponent_state[..., 3:5].reshape(num_envs, -1), ball_state[:, 3:5]), dim=-1)  # num_envs, 10
+    obs_ori = torch.cat((torch.sin(self_state[:, 8]).unsqueeze(-1), torch.cos(self_state[:, 8]).unsqueeze(-1), torch.tan(self_state[:, 8]).unsqueeze(-1)), dim=-1)      # num_envs, 3
+    vec2others = obs_pos[:, 2:] - self_state[:, 0:2].repeat(1, obs_pos[:, 2:].shape[1] // 2)   # num_envs, 12
+    angles = torch.atan2(vec2others[:, 1::2], vec2others[:, 0::2])
+    obs_ori2others = torch.cat((torch.sin(angles), torch.cos(angles), torch.tan(angles)), dim=1)   # num_envs, 18
+    obs_dist2others = torch.norm(vec2others.view(num_envs, -1, 2), dim=-1)  # num_envs, 6
+    obs_distball2goal = torch.cat((torch.norm(ball_state[:, 0:2] - self_goal_center, dim=-1).unsqueeze(-1), 
+                               torch.norm(ball_state[:, 0:2] - oppo_goal_center, dim=-1).unsqueeze(-1)), dim=-1)   # num_envs, 2
+    obs_time_left = (max_episode_length - progress_buf).unsqueeze(-1)   # num_envs, 1
+
+    # print('obs_pos: ', obs_pos.shape)
+    # print('obs_vel: ', obs_vel.shape)
+    # print('obs_ori: ', obs_ori.shape)
+    # print('obs_ori2others: ', obs_ori2others.shape)
+    # print('obs_dist2others: ', obs_dist2others.shape)
+    # print('obs_distball2goal: ', obs_distball2goal.shape)
+    # print('obs_time_left: ', obs_time_left.shape)
+
+    obs = torch.cat((obs_pos, obs_vel, obs_ori, obs_ori2others, obs_dist2others, obs_distball2goal, obs_time_left), dim=-1)
+    return obs
